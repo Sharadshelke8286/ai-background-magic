@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
 import {
   Upload,
   Sparkles,
@@ -38,6 +39,12 @@ function Landing() {
 }
 
 function Nav() {
+  const [authed, setAuthed] = useState(false);
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setAuthed(!!data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setAuthed(!!s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
   return (
     <header className="sticky top-0 z-50 backdrop-blur-xl bg-background/70 border-b border-border">
       <div className="mx-auto max-w-7xl px-6 h-16 flex items-center justify-between">
@@ -51,15 +58,29 @@ function Nav() {
           <a href="#api" className="hover:text-foreground transition">API</a>
         </nav>
         <div className="flex items-center gap-2">
-          <button className="hidden sm:inline-flex h-9 px-4 items-center text-sm text-muted-foreground hover:text-foreground transition">
-            Sign in
-          </button>
-          <a
-            href="#try"
-            className="inline-flex h-9 px-4 items-center rounded-full text-sm font-medium bg-gradient-brand text-primary-foreground shadow-glow hover:opacity-95 transition"
-          >
-            Try free
-          </a>
+          {authed ? (
+            <Link
+              to="/dashboard"
+              className="inline-flex h-9 px-4 items-center rounded-full text-sm font-medium bg-gradient-brand text-primary-foreground shadow-glow hover:opacity-95 transition"
+            >
+              Open Studio
+            </Link>
+          ) : (
+            <>
+              <Link
+                to="/login"
+                className="hidden sm:inline-flex h-9 px-4 items-center text-sm text-muted-foreground hover:text-foreground transition"
+              >
+                Sign in
+              </Link>
+              <Link
+                to="/login"
+                className="inline-flex h-9 px-4 items-center rounded-full text-sm font-medium bg-gradient-brand text-primary-foreground shadow-glow hover:opacity-95 transition"
+              >
+                Try free
+              </Link>
+            </>
+          )}
         </div>
       </div>
     </header>
