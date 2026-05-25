@@ -1,6 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
+import { removeBackground } from "@imgly/background-removal";
 import {
   Upload,
   Sparkles,
@@ -366,26 +368,388 @@ function Pricing() {
   );
 }
 
+type HistoryItem = {
+  id: string;
+  originalUrl: string;
+  processedUrl: string;
+  timestamp: Date;
+};
+
 function CTA() {
+  const [isDragging, setIsDragging] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [processedImage, setProcessedImage] = useState<string | null>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [activeTab, setActiveTab] = useState<"main" | "history">("main");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImage = (file: File) => {
+    if (file && file.type.startsWith("image/")) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setSelectedImage(e.target?.result as string);
+        setSelectedFile(file);
+        setProcessedImage(null);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleRemoveBackground = async () => {
+    if (!selectedFile) return;
+    setIsLoading(true);
+    try {
+      const webhookResponse = await fetch("https://sharadshelke.app.n8n.cloud/webhook/remove-background", {
+        method: "POST",
+        headers: {
+          "Content-Type": selectedFile.type,
+        },
+        body: selectedFile,
+      });
+
+      if (!webhookResponse.ok) {
+        const errorText = await webhookResponse.text();
+        console.error("Webhook error:", webhookResponse.status, webhookResponse.statusText, errorText);
+        throw new Error(`Webhook request failed: ${webhookResponse.status} ${webhookResponse.statusText}`);
+      }
+
+      let processedUrl;
+      const contentType = webhookResponse.headers.get("content-type");
+      if (contentType && contentType.includes("application/json")) {
+        try {
+          const responseText = await webhookResponse.text();
+          console.log("Webhook response text:", responseText);
+          if (!responseText.trim()) {
+            console.warn("Empty JSON response from webhook, falling back to local processing");
+            const blob = await removeBackground(selectedFile);
+            processedUrl = URL.createObjectURL(blob);
+          } else {
+            const jsonData = JSON.parse(responseText);
+            processedUrl = jsonData.url;
+            processedUrl = processedUrl.replace(/^`|`$/g, "");
+          }
+        } catch (jsonError) {
+          console.error("Error parsing JSON response:", jsonError);
+          const blob = await removeBackground(selectedFile);
+          processedUrl = URL.createObjectURL(blob);
+        }
+      } else if (contentType && contentType.includes("image")) {
+        const blob = await webhookResponse.blob();
+        processedUrl = URL.createObjectURL(blob);
+      } else {
+        const blob = await removeBackground(selectedFile);
+        processedUrl = URL.createObjectURL(blob);
+      }
+
+      setProcessedImage(processedUrl);
+      
+      if (selectedImage) {
+        const newHistoryItem: HistoryItem = {
+          id: Date.now().toString(),
+          originalUrl: selectedImage,
+          processedUrl: processedUrl,
+          timestamp: new Date(),
+        };
+        setHistory((prev) => [newHistoryItem, ...prev]);
+      }
+    } catch (error) {
+      console.error("Error removing background:", error);
+      toast.error(`Failed to remove background: ${(error as Error).message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDownload = async () => {
+    if (!processedImage) return;
+    try {
+      if (processedImage.startsWith("http://") || processedImage.startsWith("https://")) {
+        const response = await fetch(processedImage);
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "removed-background.png";
+        a.click();
+        URL.revokeObjectURL(url);
+      } else {
+        const a = document.createElement("a");
+        a.href = processedImage;
+        a.download = "removed-background.png";
+        a.click();
+      }
+    } catch (error) {
+      console.error("Error downloading:", error);
+      toast.error("Failed to download image");
+    }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) handleImage(file);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) handleImage(file);
+  };
+
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      
+      for (const item of items) {
+        if (item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (file) handleImage(file);
+          break;
+        }
+      }
+    };
+
+    document.addEventListener("paste", handlePaste);
+    return () => document.removeEventListener("paste", handlePaste);
+  }, []);
+
   return (
-    <section id="try" className="py-24 lg:py-32">
+    <section 
+      id="try" 
+      className="py-24 lg:py-32"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <div className="mx-auto max-w-5xl px-6">
-        <div className="relative overflow-hidden rounded-3xl glass-card p-10 lg:p-16 text-center shadow-glow">
+        <div 
+          className={`relative overflow-hidden rounded-3xl p-10 lg:p-16 text-center shadow-glow transition-all duration-200 ${
+            isDragging 
+              ? "glass-card border-2 border-primary/70 scale-[1.02]" 
+              : "glass-card"
+          }`}
+        >
           <div className="absolute inset-0 -z-10 opacity-60" style={{ background: "var(--gradient-radial-glow)" }} />
-          <h2 className="text-4xl sm:text-5xl font-bold tracking-tight">
-            Ready to <span className="text-gradient-brand">SnapCut</span> something?
-          </h2>
-          <p className="mt-4 text-muted-foreground max-w-xl mx-auto">
-            Drop your first image and watch the background vanish in seconds. Five free cutouts, every day.
-          </p>
-          <div className="mt-8 flex flex-wrap justify-center gap-3">
-            <a className="inline-flex h-12 px-6 items-center gap-2 rounded-full bg-gradient-brand text-primary-foreground font-semibold shadow-glow hover:opacity-95 transition">
-              <Upload className="h-4 w-4" /> Upload an image
-            </a>
-            <a className="inline-flex h-12 px-6 items-center gap-2 rounded-full glass-card font-medium hover:border-primary/40 transition">
-              View pricing
-            </a>
+          <input 
+            type="file" 
+            ref={fileInputRef}
+            accept="image/*"
+            onChange={handleFileSelect}
+            className="hidden"
+          />
+
+          <div className="flex gap-2 mb-8 justify-center">
+            <button
+              onClick={() => setActiveTab("main")}
+              className={`px-6 py-2 rounded-full text-sm font-medium transition ${
+                activeTab === "main"
+                  ? "bg-gradient-brand text-primary-foreground shadow-glow"
+                  : "glass-card hover:border-primary/40"
+              }`}
+            >
+              Remove Background
+            </button>
+            <button
+              onClick={() => setActiveTab("history")}
+              className={`px-6 py-2 rounded-full text-sm font-medium transition ${
+                activeTab === "history"
+                  ? "bg-gradient-brand text-primary-foreground shadow-glow"
+                  : "glass-card hover:border-primary/40"
+              }`}
+            >
+              History ({history.length})
+            </button>
           </div>
+          
+          {activeTab === "history" ? (
+            <div className="space-y-6">
+              {history.length === 0 ? (
+                <div className="text-center py-12">
+                  <p className="text-muted-foreground">No history yet. Process some images first!</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {history.map((item) => (
+                    <div key={item.id} className="glass-card rounded-2xl p-4 space-y-4">
+                      <div className="flex gap-4">
+                        <div className="flex-1">
+                          <p className="text-xs text-muted-foreground mb-2">Before</p>
+                          <img
+                            src={item.originalUrl}
+                            alt="Before"
+                            className="w-full h-32 object-cover rounded-lg"
+                          />
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-xs text-muted-foreground mb-2">After</p>
+                          <img
+                            src={item.processedUrl}
+                            alt="After"
+                            className="w-full h-32 object-cover rounded-lg"
+                            style={{
+                              backgroundImage: "linear-gradient(45deg,#1e293b 25%,transparent 25%),linear-gradient(-45deg,#1e293b 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#1e293b 75%),linear-gradient(-45deg,transparent 75%,#1e293b 75%)",
+                              backgroundSize: "24px 24px",
+                              backgroundPosition: "0 0, 0 12px, 12px -12px, -12px 0",
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-muted-foreground">
+                          {item.timestamp.toLocaleString()}
+                        </span>
+                        <button
+                          onClick={async () => {
+                            try {
+                              if (item.processedUrl.startsWith("http://") || item.processedUrl.startsWith("https://")) {
+                                const response = await fetch(item.processedUrl);
+                                const blob = await response.blob();
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement("a");
+                                a.href = url;
+                                a.download = `removed-background-${item.id}.png`;
+                                a.click();
+                                URL.revokeObjectURL(url);
+                              } else {
+                                const a = document.createElement("a");
+                                a.href = item.processedUrl;
+                                a.download = `removed-background-${item.id}.png`;
+                                a.click();
+                              }
+                            } catch (error) {
+                              console.error("Error downloading:", error);
+                              toast.error("Failed to download image");
+                            }
+                          }}
+                          className="text-sm text-primary hover:underline"
+                        >
+                          Download
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : processedImage ? (
+            <div className="space-y-6">
+              <div className="relative inline-block">
+                <img 
+                  src={processedImage} 
+                  alt="Processed" 
+                  className="max-h-[400px] rounded-2xl shadow-glow"
+                  style={{
+                    backgroundImage: "linear-gradient(45deg,#1e293b 25%,transparent 25%),linear-gradient(-45deg,#1e293b 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#1e293b 75%),linear-gradient(-45deg,transparent 75%,#1e293b 75%)",
+                    backgroundSize: "24px 24px",
+                    backgroundPosition: "0 0, 0 12px, 12px -12px, -12px 0",
+                  }}
+                />
+                <button
+                  onClick={() => {
+                    setProcessedImage(null);
+                    setSelectedImage(null);
+                    setSelectedFile(null);
+                  }}
+                  className="absolute -top-2 -right-2 h-8 w-8 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center shadow-lg hover:opacity-90 transition"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="flex flex-wrap justify-center gap-3">
+                <button 
+                  onClick={handleDownload}
+                  className="inline-flex h-12 px-6 items-center gap-2 rounded-full bg-gradient-brand text-primary-foreground font-semibold shadow-glow hover:opacity-95 transition"
+                >
+                  <Sparkles className="h-4 w-4" /> Download Image
+                </button>
+                <button 
+                  onClick={() => {
+                    setProcessedImage(null);
+                    setSelectedImage(null);
+                    setSelectedFile(null);
+                  }}
+                  className="inline-flex h-12 px-6 items-center gap-2 rounded-full glass-card font-medium hover:border-primary/40 transition"
+                >
+                  Choose Another
+                </button>
+              </div>
+            </div>
+          ) : selectedImage ? (
+            <div className="space-y-6">
+              <div className="relative inline-block">
+                <img 
+                  src={selectedImage} 
+                  alt="Preview" 
+                  className="max-h-[400px] rounded-2xl shadow-glow"
+                />
+                <button
+                  onClick={() => {
+                    setSelectedImage(null);
+                    setSelectedFile(null);
+                  }}
+                  className="absolute -top-2 -right-2 h-8 w-8 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center shadow-lg hover:opacity-90 transition"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="flex flex-wrap justify-center gap-3">
+                <button 
+                  onClick={handleRemoveBackground}
+                  disabled={isLoading}
+                  className="inline-flex h-12 px-6 items-center gap-2 rounded-full bg-gradient-brand text-primary-foreground font-semibold shadow-glow hover:opacity-95 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isLoading ? (
+                    <div className="h-4 w-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <Sparkles className="h-4 w-4" />
+                  )}
+                  {isLoading ? "Processing..." : "Remove Background"}
+                </button>
+                <button 
+                  onClick={() => {
+                    setSelectedImage(null);
+                    setSelectedFile(null);
+                  }}
+                  className="inline-flex h-12 px-6 items-center gap-2 rounded-full glass-card font-medium hover:border-primary/40 transition"
+                >
+                  Choose Another
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <h2 className="text-4xl sm:text-5xl font-bold tracking-tight">
+                Ready to <span className="text-gradient-brand">SnapCut</span> something?
+              </h2>
+              <p className="mt-4 text-muted-foreground max-w-xl mx-auto">
+                Drop your first image and watch the background vanish in seconds. Five free cutouts, every day.
+              </p>
+              <div className="mt-8 flex flex-wrap justify-center gap-3">
+                <button 
+                  onClick={() => fileInputRef.current?.click()}
+                  className="inline-flex h-12 px-6 items-center gap-2 rounded-full bg-gradient-brand text-primary-foreground font-semibold shadow-glow hover:opacity-95 transition"
+                >
+                  <Upload className="h-4 w-4" /> Upload an image
+                </button>
+                <a className="inline-flex h-12 px-6 items-center gap-2 rounded-full glass-card font-medium hover:border-primary/40 transition">
+                  View pricing
+                </a>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </section>
