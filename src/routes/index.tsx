@@ -401,6 +401,7 @@ function CTA() {
     if (!selectedFile) return;
     setIsLoading(true);
     try {
+      // First try n8n webhook
       const webhookResponse = await fetch("https://sharadshelke.app.n8n.cloud/webhook/remove-background", {
         method: "POST",
         headers: {
@@ -409,36 +410,44 @@ function CTA() {
         body: selectedFile,
       });
 
-      if (!webhookResponse.ok) {
-        const errorText = await webhookResponse.text();
-        console.error("Webhook error:", webhookResponse.status, webhookResponse.statusText, errorText);
-        throw new Error(`Webhook request failed: ${webhookResponse.status} ${webhookResponse.statusText}`);
-      }
-
       let processedUrl;
-      const contentType = webhookResponse.headers.get("content-type");
-      if (contentType && contentType.includes("application/json")) {
-        try {
-          const responseText = await webhookResponse.text();
-          console.log("Webhook response text:", responseText);
-          if (!responseText.trim()) {
-            console.warn("Empty JSON response from webhook, falling back to local processing");
+      if (webhookResponse.ok) {
+        const contentType = webhookResponse.headers.get("content-type");
+        // Read response as array buffer first to avoid stream exhaustion
+        const responseArrayBuffer = await webhookResponse.arrayBuffer();
+        
+        if (contentType && contentType.includes("application/json")) {
+          try {
+            const responseText = new TextDecoder().decode(responseArrayBuffer);
+            console.log("Webhook response text:", responseText);
+            if (!responseText.trim()) {
+              console.warn("Empty JSON response from webhook, falling back to local processing");
+              const blob = await removeBackground(selectedFile);
+              processedUrl = URL.createObjectURL(blob);
+            } else {
+              const jsonData = JSON.parse(responseText);
+              processedUrl = jsonData.url;
+              processedUrl = processedUrl.replace(/^`|`$/g, "");
+            }
+          } catch (jsonError) {
+            console.error("Error parsing JSON response:", jsonError);
+            console.warn("Falling back to local processing");
             const blob = await removeBackground(selectedFile);
             processedUrl = URL.createObjectURL(blob);
-          } else {
-            const jsonData = JSON.parse(responseText);
-            processedUrl = jsonData.url;
-            processedUrl = processedUrl.replace(/^`|`$/g, "");
           }
-        } catch (jsonError) {
-          console.error("Error parsing JSON response:", jsonError);
+        } else if (contentType && contentType.includes("image")) {
+          const blob = new Blob([responseArrayBuffer]);
+          processedUrl = URL.createObjectURL(blob);
+        } else {
+          console.warn("Unrecognized webhook response type, falling back to local processing");
           const blob = await removeBackground(selectedFile);
           processedUrl = URL.createObjectURL(blob);
         }
-      } else if (contentType && contentType.includes("image")) {
-        const blob = await webhookResponse.blob();
-        processedUrl = URL.createObjectURL(blob);
       } else {
+        // Webhook failed, fall back to local processing
+        const errorText = await webhookResponse.text();
+        console.error("Webhook error:", webhookResponse.status, webhookResponse.statusText, errorText);
+        console.warn("Falling back to local processing");
         const blob = await removeBackground(selectedFile);
         processedUrl = URL.createObjectURL(blob);
       }
