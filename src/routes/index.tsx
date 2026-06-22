@@ -402,12 +402,12 @@ function CTA() {
     setIsLoading(true);
     try {
       // First try n8n webhook
+      const formData = new FormData();
+      formData.append("image", selectedFile);
+      
       const webhookResponse = await fetch("https://sharadshelke.app.n8n.cloud/webhook/remove-background", {
         method: "POST",
-        headers: {
-          "Content-Type": selectedFile.type,
-        },
-        body: selectedFile,
+        body: formData,
       });
 
       let processedUrl;
